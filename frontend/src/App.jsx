@@ -8,6 +8,8 @@ import DiceGame from './pages/DiceGame';
 import PongGame from './pages/PongGame';
 import ConnectFourGame from './pages/ConnectFourGame';
 import RPSGame from './pages/RPSGame';
+import ShooterGame from './pages/ShooterGame';
+import SpaceGame from './pages/SpaceGame';
 import Leaderboard from './pages/Leaderboard';
 import Toast from './components/Toast';
 import './App.css';
@@ -27,6 +29,8 @@ function AppRoutes() {
         <Route path="/pong/:code"     element={player ? <PongGame /> : <Navigate to="/" replace />} />
         <Route path="/c4/:code"       element={player ? <ConnectFourGame /> : <Navigate to="/" replace />} />
         <Route path="/rps/:code"      element={player ? <RPSGame /> : <Navigate to="/" replace />} />
+        <Route path="/shooter/:code"  element={player ? <ShooterGame /> : <Navigate to="/" replace />} />
+        <Route path="/space/:code"    element={player ? <SpaceGame />   : <Navigate to="/" replace />} />
         <Route path="/leaderboard"    element={<Leaderboard />} />
         <Route path="*"               element={<Navigate to="/" replace />} />
       </Routes>

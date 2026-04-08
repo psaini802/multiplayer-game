@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useGame } from '../context/GameContext';
 import socket from '../socket';
+import { API_BASE } from '../config';
 
 const GAMES = [
   { id: 'tictactoe',   label: 'Tic Tac Toe',  icon: '✕○', color: 'var(--primary)', desc: '2 players · Strategy', path: '/game'  },
@@ -10,10 +11,12 @@ const GAMES = [
   { id: 'pong',        label: 'Pong',         icon: '🏓', color: '#00e5ff',        desc: '2 players · Real-time',path: '/pong'  },
   { id: 'connectfour', label: 'Connect Four', icon: '🔴', color: '#ffd700',        desc: '2 players · Strategy', path: '/c4'    },
   { id: 'rps',         label: 'RPS Battle',   icon: '✂️', color: '#ff6b9d',        desc: '2 players · Best of 5',path: '/rps'   },
+  { id: 'shooter',    label: 'Arena Shooter',icon: '🔫', color: '#ff4444',        desc: '2–4 players · Action', path: '/shooter'},
+  { id: 'space',      label: 'Space Shooter',icon: '🚀', color: '#00e5ff',        desc: '2–4 players · Sci-Fi',  path: '/space'  },
 ];
 
 export default function Lobby() {
-  const { player, logout, showToast } = useGame();
+  const { player, setPlayer, logout, showToast } = useGame();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -24,6 +27,22 @@ export default function Lobby() {
   const [creating, setCreating] = useState(false);
 
   const fetchRooms = useCallback(() => socket.emit('get_rooms'), []);
+
+  // Refresh stats from server every time the lobby mounts (e.g. after returning from a game)
+  useEffect(() => {
+    if (!player?.username) return;
+    fetch(`${API_BASE}/api/players/${player.username}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data && !data.error) {
+          setPlayer(data);
+          localStorage.setItem('ttt_player', JSON.stringify(data));
+        }
+      })
+      .catch(() => {});
+    // Also re-register on socket so server has latest socket.id mapping
+    if (socket.connected) socket.emit('register', { username: player.username });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onRoomsList = setRooms;
@@ -106,7 +125,7 @@ export default function Lobby() {
         </div>
 
         {/* Game selector tabs */}
-        <div style={{ maxWidth: 900, margin: '0 auto 20px', display: 'flex', gap: 10 }}>
+        <div className="game-tabs-wrap">
           {GAMES.map(g => (
             <button
               key={g.id}

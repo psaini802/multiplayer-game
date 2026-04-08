@@ -4,6 +4,8 @@ const { createDiceState, processDiceRoll, TURN_SECONDS: DICE_SECS } = require('.
 const { createPongState, tickPong, TICK_MS: PONG_TICK }           = require('./pongGame');
 const { createC4State, dropToken, findWin, isFull }               = require('./connectFourGame');
 const { createRPSState, resolveRound, nextRound, TURN_SECONDS: RPS_SECS } = require('./rpsGame');
+const { createShooterState, tickShooter, publicState: shooterPublic, TICK_MS: SHOOTER_TICK } = require('./shooterGame');
+const { createSpaceState,  tickSpace,   publicSpaceState, TICK_MS: SPACE_TICK }             = require('./spaceGame');
 
 // ── TicTacToe helpers ─────────────────────────────────────────────────────
 const WIN_CONDITIONS = [
@@ -26,7 +28,7 @@ function calcElo(wElo, lElo, isDraw=false) {
 }
 
 // ── Room helpers ──────────────────────────────────────────────────────────
-const MAX_PLAYERS = { tictactoe:2, snake:4, dice:4, pong:2, connectfour:2, rps:2 };
+const MAX_PLAYERS = { tictactoe:2, snake:4, dice:4, pong:2, connectfour:2, rps:2, shooter:4, space:4, car:4 };
 // Games that auto-start when max players reached (no manual start button)
 const AUTO_START = new Set(['tictactoe','pong','connectfour','rps']);
 
@@ -261,6 +263,99 @@ module.exports = (io, rooms, players, db) => {
     }
   }
 
+  // ── SHOOTER: Game loop ────────────────────────────────────────────────
+  function startShooterLoop(code) {
+    const room = rooms.get(code);
+    if (!room || room.shooterLoop) return;
+
+    room.status = 'playing';
+    room.startTime = Date.now();
+    room.gameState = createShooterState(room.players);
+
+    let count = 3;
+    io.to(code).emit('shooter_countdown', { count });
+    const cdTimer = setInterval(() => {
+      count--;
+      if (count > 0) {
+        io.to(code).emit('shooter_countdown', { count });
+      } else {
+        clearInterval(cdTimer);
+        const r = rooms.get(code);
+        if (!r) return;
+        io.to(code).emit('shooter_start', serializeRoom(r));
+
+        r.shooterLoop = setInterval(async () => {
+          const rm = rooms.get(code);
+          if (!rm || !rm.gameState) return;
+
+          const result = tickShooter(rm.gameState);
+          io.to(code).emit('shooter_tick', shooterPublic(rm.gameState));
+
+          if (result.kills?.length) {
+            io.to(code).emit('shooter_kills', result.kills);
+          }
+
+          if (result.over) {
+            rm.status = 'finished'; rm.winner = result.winner;
+            clearInterval(rm.shooterLoop); delete rm.shooterLoop;
+            try { await saveGameResult(db, rm, result.winner); } catch(e) {}
+            io.to(code).emit('shooter_over', {
+              winner: result.winner,
+              scores: Object.values(shooterPublic(rm.gameState).players)
+                .map(p => ({ username: p.username, score: p.score, color: p.color }))
+                .sort((a, b) => b.score - a.score),
+            });
+          }
+        }, SHOOTER_TICK);
+      }
+    }, 1000);
+  }
+
+  // ── SPACE SHOOTER: Game loop ──────────────────────────────────────────
+  function startSpaceLoop(code) {
+    const room = rooms.get(code);
+    if (!room || room.spaceLoop) return;
+
+    room.status   = 'playing';
+    room.startTime = Date.now();
+    room.gameState = createSpaceState(room.players);
+
+    let count = 3;
+    io.to(code).emit('space_countdown', { count });
+    const cdTimer = setInterval(() => {
+      count--;
+      if (count > 0) {
+        io.to(code).emit('space_countdown', { count });
+      } else {
+        clearInterval(cdTimer);
+        const r = rooms.get(code);
+        if (!r) return;
+        io.to(code).emit('space_start', serializeRoom(r));
+
+        r.spaceLoop = setInterval(async () => {
+          const rm = rooms.get(code);
+          if (!rm || !rm.gameState) return;
+
+          const result = tickSpace(rm.gameState);
+          io.to(code).emit('space_tick', publicSpaceState(rm.gameState));
+
+          if (result.over) {
+            rm.status = 'finished'; rm.winner = result.winner;
+            clearInterval(rm.spaceLoop); delete rm.spaceLoop;
+            try { await saveGameResult(db, rm, result.winner); } catch(e) {}
+            const pList = Object.values(publicSpaceState(rm.gameState).players);
+            io.to(code).emit('space_over', {
+              winner: result.winner,
+              reason: result.reason,
+              scores: [...pList].sort((a, b) => b.kills - a.kills)
+                .map(p => ({ username: p.username, kills: p.kills, deaths: p.deaths, color: p.color })),
+            });
+          }
+        }, SPACE_TICK);
+      }
+    }, 1000);
+  }
+
   // ─────────────────────────────────────────────────────────────────────
   io.on('connection', socket => {
     console.log(`[+] ${socket.id}`);
@@ -408,6 +503,12 @@ module.exports = (io, rooms, players, db) => {
         io.to(room.code).emit('dice_start', serializeRoom(room));
         startDiceTurnTimer(room.code);
         io.emit('rooms_updated');
+      } else if (room.gameType==='shooter') {
+        startShooterLoop(room.code);
+        io.emit('rooms_updated');
+      } else if (room.gameType==='space') {
+        startSpaceLoop(room.code);
+        io.emit('rooms_updated');
       }
     });
 
@@ -481,6 +582,30 @@ module.exports = (io, rooms, players, db) => {
       const { paddles } = room.gameState;
       if (paddles.left.username  === player.username) paddles.left.dy  = dy;
       if (paddles.right.username === player.username) paddles.right.dy = dy;
+    });
+
+    // ── SHOOTER: player input ─────────────────────────────────────────
+    socket.on('shooter_input', ({ code, keys, angle, shoot }) => {
+      const room = rooms.get((code||'').toUpperCase());
+      if (!room || room.gameType!=='shooter' || room.status!=='playing' || !room.gameState) return;
+      const player = players.get(socket.id);
+      if (!player) return;
+      const p = room.gameState.players[player.username];
+      if (!p || !p.alive) return;
+      if (keys)  p.keys  = { ...keys, _shoot: p.keys._shoot };
+      if (typeof angle === 'number') p.angle = angle;
+      if (shoot) p.keys._shoot = true;  // latch until tick consumes it
+    });
+
+    // ── SPACE SHOOTER: player input ───────────────────────────────────
+    socket.on('space_input', ({ code, keys }) => {
+      const room = rooms.get((code||'').toUpperCase());
+      if (!room || room.gameType!=='space' || room.status!=='playing' || !room.gameState) return;
+      const player = players.get(socket.id);
+      if (!player) return;
+      const p = room.gameState.players[player.username];
+      if (!p || !p.alive) return;
+      p.keys = keys || {};
     });
 
     // ── CONNECT FOUR: drop token ──────────────────────────────────────
@@ -603,10 +728,13 @@ module.exports = (io, rooms, players, db) => {
     });
 
     function clearRoomLoops(room) {
-      if (room.gameLoop)  { clearInterval(room.gameLoop);  delete room.gameLoop; }
-      if (room.pongLoop)  { clearInterval(room.pongLoop);  delete room.pongLoop; }
-      if (room.turnTimer) { clearInterval(room.turnTimer); delete room.turnTimer; }
-      if (room.rpsTimer)  { clearInterval(room.rpsTimer);  delete room.rpsTimer; }
+      if (room.gameLoop)    { clearInterval(room.gameLoop);    delete room.gameLoop; }
+      if (room.pongLoop)    { clearInterval(room.pongLoop);    delete room.pongLoop; }
+      if (room.shooterLoop) { clearInterval(room.shooterLoop); delete room.shooterLoop; }
+      if (room.spaceLoop)   { clearInterval(room.spaceLoop);   delete room.spaceLoop; }
+      if (room.carLoop)     { clearInterval(room.carLoop);     delete room.carLoop; }
+      if (room.turnTimer)   { clearInterval(room.turnTimer);   delete room.turnTimer; }
+      if (room.rpsTimer)    { clearInterval(room.rpsTimer);    delete room.rpsTimer; }
     }
 
     function handleLeave(socket, code) {
